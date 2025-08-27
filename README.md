@@ -1,5 +1,8 @@
 # data-engineer-job
-
+---------===== Important ---- ========
+This project was built using Docker on a Mac M1 PC environment
+The project was built with the help of internet sources and AI
+----------===================----------
 Baseline stack for streaming user engagement events from PostgreSQL to multiple sinks (ClickHouse, Redis, external system) with Flink.
 
 ## Stack

@@ -1,0 +1,197 @@
+name: data-engineer-job
+
+services:
+  postgres:
+    image: postgres:16
+    platform: linux/arm64
+    container_name: dejob-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    command:
+      - "postgres"
+      - "-c"
+      - "wal_level=logical"
+      - "-c"
+      - "max_replication_slots=20"
+      - "-c"
+      - "max_wal_senders=20"
+      - "-c"
+      - "shared_buffers=256MB"
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d
+    networks: [ dejob ]
+
+  zookeeper:
+    image: bitnami/zookeeper:3.9
+    platform: linux/arm64
+    container_name: dejob-zookeeper
+    environment:
+      ALLOW_ANONYMOUS_LOGIN: "yes"
+    networks: [ dejob ]
+
+  kafka:
+    image: bitnami/kafka:3.6
+    platform: linux/arm64
+    container_name: dejob-kafka
+    depends_on: [ zookeeper ]
+    environment:
+      KAFKA_CFG_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_BROKER_ID: "1"
+      ALLOW_PLAINTEXT_LISTENER: "yes"
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_CFG_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+    ports:
+      - "9092:9092"
+    networks: [ dejob ]
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    platform: linux/arm64
+    container_name: dejob-kafka-ui
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    depends_on: [ kafka ]
+    ports:
+      - "8080:8080"
+    networks: [ dejob ]
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3
+    platform: linux/arm64
+    container_name: dejob-clickhouse
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB}
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - chdata:/var/lib/clickhouse
+    networks: [ dejob ]
+
+  redis:
+    image: redis:7
+    platform: linux/arm64
+    container_name: dejob-redis
+    ports:
+      - "6379:6379"
+    networks: [ dejob ]
+
+  flink-jm:
+    image: flink:1.18.1-scala_2.12-java11
+    platform: linux/amd64
+    container_name: dejob-flink-jm
+    command: jobmanager
+    environment:
+      JOB_MANAGER_HEAP_SIZE: "1024m"
+      JOB_MANAGER_RPC_ADDRESS: flink-jm
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jm
+        rest.address: flink-jm
+        rest.port: 8081
+    ports:
+      - "8081:8081"
+    networks: [ dejob ]
+    depends_on: [ kafka ]
+    volumes:
+      - ./jobs/flink:/opt/flink/jobs
+
+  flink-tm:
+    image: flink:1.18.1-scala_2.12-java11
+    platform: linux/amd64
+    container_name: dejob-flink-tm
+    command: taskmanager
+    environment:
+      TASK_MANAGER_HEAP_SIZE: "1024m"
+      JOB_MANAGER_RPC_ADDRESS: flink-jm
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jm
+        taskmanager.numberOfTaskSlots: 2
+    depends_on: [ flink-jm ]
+    networks: [ dejob ]
+    volumes:
+      - ./jobs/flink:/opt/flink/jobs
+
+  external-mock:
+    build:
+      context: ./services/external-mock
+    platform: linux/arm64
+    container_name: dejob-external
+    environment:
+      PORT: ${EXTERNAL_PORT}
+    ports:
+      - "${EXTERNAL_PORT}:${EXTERNAL_PORT}"
+    networks: [ dejob ]
+
+  # Optional generator (start with: docker compose --profile gen up -d data-gen)
+  data-gen:
+    build:
+      context: ./services/data-gen
+    platform: linux/arm64
+    container_name: dejob-data-gen
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DATA_GEN_RPS: "5"
+    depends_on: [ postgres ]
+    networks: [ dejob ]
+    profiles: [ "gen" ]
+
+  # Debezium Connect (CDC)
+  connect:
+    image: quay.io/debezium/connect:2.7
+    platform: linux/amd64
+    container_name: dejob-connect
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: 1
+      CONFIG_STORAGE_TOPIC: connect.configs
+      OFFSET_STORAGE_TOPIC: connect.offsets
+      STATUS_STORAGE_TOPIC: connect.status
+      KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      KEY_CONVERTER_SCHEMAS_ENABLE: "false"
+      VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+      ENABLE_DEBEZIUM_SCRIPTING: "true"
+    depends_on: [ kafka, postgres ]
+    ports:
+      - "8083:8083"
+    networks: [ dejob ]
+
+  # Fan-out consumer → Redis & External HTTP
+  fanout:
+    build:
+      context: ./services/fanout
+    platform: linux/arm64
+    container_name: dejob-fanout
+    environment:
+      KAFKA_BROKER: kafka:9092
+      TOPIC: engagements.enriched.v1
+      GROUP: fanout-g1
+      REDIS_HOST: redis
+      EXT_URL: http://external-mock:9009/ingest
+      DEDUP_TTL_SEC: "1200"
+    depends_on: [ kafka, redis, external-mock ]
+    networks: [ dejob ]
+
+networks:
+  dejob:
+
+volumes:
+  pgdata:
+  chdata:

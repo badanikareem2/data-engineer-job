@@ -1,0 +1,43 @@
+services:
+  # (optional) mounts for Flink
+  flink-jm:
+    volumes:
+      - ./jobs/flink:/opt/flink/jobs
+      - ./lib:/opt/flink/usrlib
+
+  flink-tm:
+    volumes:
+      - ./jobs/flink:/opt/flink/jobs
+      - ./lib:/opt/flink/usrlib
+
+  # Fanout: consume RAW CDC -> Redis + external
+  fanout:
+    build:
+      context: ./services/fanout
+    environment:
+      KAFKA_BROKER: "kafka:9092"
+      TOPIC: "dbserver1.public.engagement_events"
+      GROUP_ID: "fanout-g2"            # new group to avoid existing offsets
+      AUTO_OFFSET_RESET: "earliest"
+      REDIS_HOST: "redis"
+      REDIS_PORT: "6379"
+      WINDOW_SECONDS: "600"
+      EXTERNAL_URL: "http://external-mock:9009/event"
+    depends_on:
+      - kafka
+      - redis
+      - external-mock
+    restart: unless-stopped
+
+  # Debug reader (optional)
+  raw-consumer:
+    build:
+      context: ./services/raw-consumer
+    environment:
+      KAFKA_BROKER: "kafka:9092"
+      TOPIC: "dbserver1.public.engagement_events"
+      GROUP_ID: "debug-consumer"
+      AUTO_OFFSET_RESET: "earliest"
+    depends_on:
+      - kafka
+    restart: unless-stopped

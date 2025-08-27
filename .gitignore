@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+
+# Docker
+*.log
+*.pid
+*.sock
+*.tar.gz
+.env.local
+.env.*
+!.env.example
+volumes/
+data/
+
+# IDEs
+.vscode/
+.idea/
+.DS_Store

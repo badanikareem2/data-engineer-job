@@ -1,0 +1,33 @@
+services:
+  # Reduce JVM heaps to avoid OOM on macOS
+  zookeeper:
+    environment:
+      JVMFLAGS: "-Xms128m -Xmx256m"
+
+  kafka:
+    environment:
+      KAFKA_HEAP_OPTS: "-Xms256m -Xmx512m"
+
+  connect:
+    environment:
+      KAFKA_HEAP_OPTS: "-Xms256m -Xmx512m"
+      KAFKA_CONNECT_HEAP_OPTS: "-Xms256m -Xmx512m"
+
+  # Fanout → Redis + external mock; consumes the RAW CDC topic
+  fanout:
+    build:
+      context: ./services/fanout
+    environment:
+      KAFKA_BROKER: "kafka:9092"
+      TOPIC: "dbserver1.public.engagement_events"
+      GROUP_ID: "fanout-g3"
+      AUTO_OFFSET_RESET: "earliest"
+      REDIS_HOST: "redis"
+      REDIS_PORT: "6379"
+      WINDOW_SECONDS: "600"
+      EXTERNAL_URL: "http://external-mock:9009/ingest"
+    depends_on:
+      - kafka
+      - redis
+      - external-mock
+    restart: unless-stopped
